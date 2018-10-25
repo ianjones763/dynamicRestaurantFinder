@@ -1,0 +1,872 @@
+<!-- 
+/*
+ * Dynamic RestaurantFinder
+ * ########################
+ * Allows user to specify two points A and B on the map of San Francisco, and 
+ * filters the displayed restaurants based on their proximity to both points A and B.
+ * Also allows user to filter based on the Inspection Score of the restaurant.
+ *
+ * Created by Ian Jones
+ * ianjones@stanford.edu
+ */
+-->
+
+<html>
+    <head>
+    	<script src="http://d3js.org/d3.v5.min.js"></script>
+    </head>
+<body>
+	<div id="visualization_area"></div>
+
+
+	<!-- Set up visualization area -->
+	<script>
+
+		// Set up size
+		const MAP_WIDTH  = 750;
+		const MAP_HEIGHT = 750;
+		const MARGIN_X   = 650;
+		const MARGIN_Y   = 180;
+		const MAP_YSHIFT = 75;
+
+		// Slider stuff
+		const SLIDER_WIDTH 		= 150;
+		const SLIDER_X 	  	    = 50;
+		const SLIDERA_Y   		= 275;
+		const SLIDERB_Y   		= 400;
+		const SLIDERC_Y   		= 525;
+		const MAX_RADIUS   		= 5;
+		const MAX_INSPECT_SCORE = 100;
+
+		var sliderA_val;
+		var sliderB_val;
+		var sliderC_val;
+
+		// Button stuff
+		const BUTTON_WIDTH  = 100;
+		const BUTTON_HEIGHT = 50;
+		const BUTTON_Y 		= 625;
+		const BUTTON_X      = 50;
+
+		// Marker stuff
+		const MARKER_START_X = 30;
+		const MARKER_A_START_Y = MAP_HEIGHT + 80;
+		const MARKER_B_START_Y = MAP_HEIGHT + 120;
+		var markerA_x;
+		var markerA_y;
+		var markerB_x;
+		var markerB_y;
+		var markerAPlaced = false;
+		var markerBPlaced = false;
+
+		// Point stuff
+		var prevSelection = null;
+
+		// Colors
+		const TITLE_COLOR 	   = d3.rgb(100,100,100);
+		const SLIDER_COLOR 	   = d3.rgb(189,189,189);
+		const SLIDER_BAR_COLOR = d3.rgb(217,217,217);
+		const TEXT_COLOR 	   = d3.rgb(150,150,150);
+		const POPUP_TEXT_COLOR = "white";
+
+
+
+		/* **************** */
+	 	/* RENDER MAP STUFF */
+	 	/* **************** */
+	 	function plotPoint(d, x, y) {
+			mapBackground.selectAll('dataPoint')
+						 .data(d)
+						 .enter()
+						 .append('circle')
+						 .attr("id", "dataPoint")
+						 .attr('cx', x)
+						 .attr('cy', y)
+						 .attr('r', 3)
+						 .on("click", on_click_point)
+						 .on("mouseover", on_mouseover_point)
+						 .on("mouseout", on_mouseout_point);
+	 	}
+
+
+		/* Plot all points first */
+		function plotInitialData(d) {
+			var projectedLocation = projection([d.long, d.lat]);
+			var point_data = [ {name: d.name, address: d.address, zip: d.zip, x: projectedLocation[0], y: projectedLocation[1]} ];
+			plotPoint(point_data, projectedLocation[0], projectedLocation[1]);
+		};
+
+		/* Returns number of pixels per mile on screen */
+		function calculatePixelsPerMile() {
+			var radians = d3.geoDistance(projection.invert([0, 0]), projection.invert([MAP_WIDTH, MAP_HEIGHT]));
+			const R = 3959;
+			var arc_length = R * radians;
+			var hyp = Math.sqrt(Math.pow(MAP_WIDTH, 2) + Math.pow(MAP_HEIGHT, 2));
+			return hyp / arc_length;
+		}
+
+	  	/* Transformation from xCoord on page to actual value for slider */
+	  	function slider_transform(xCoord, width, maxVal) {
+	  		var output = xCoord - SLIDER_X;
+	  		output /= width;
+	  		output *= maxVal;
+	  		return Math.round(output);
+	  	}
+
+	  	/* Convert degrees to radians */
+	  	function toRadians(deg) {
+	  		return deg * Math.PI / 180.0;
+	  	}
+
+	  	/* Calculates the distance in miles between two gps coordinates */
+	  	/* loc[long, lat] */
+	  	function gps_dist(loc1, loc2) {
+	  		const R 		= 3959;
+	  		var lat1Rad     = toRadians(loc1[1]);
+	  		var lat2Rad     = toRadians(loc2[1]);
+	  		var deltLatRad  = toRadians(loc2[1] - loc1[1]);
+	  		var deltLongRad = toRadians(loc2[0] - loc1[0]);	  	
+
+	  		var a = Math.pow(Math.sin(deltLatRad / 2), 2) + 
+	  				(Math.cos(lat1Rad) + Math.cos(lat2Rad)) * 
+	  				Math.pow(Math.sin(deltLongRad / 2), 2);
+
+	  		var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+	  		return (R * c);
+	  	}
+
+	  	/* Calculates the distance in miles between two gps coordinates, converting to pixels then to miles */
+	  	function dist(loc1, loc2) {
+	  		var numPixels = Math.sqrt(Math.pow(loc2[0] - loc1[0], 2) + Math.pow((loc2[1] - loc1[1]), 2));
+	  		return numPixels / pixelsPerMile;
+	  	}
+
+	  	/* Returns true if the given location is within the mileage radius of marker A */
+	  	function nearA(loc) {
+	  		if ((markerA_x != MARKER_START_X) && dist(projection(loc), [markerA_x + 20, markerA_y + 40]) < sliderA_val) {
+	  			return true;
+	  		}
+	  		return false;
+	  	}
+
+		/* Returns true if the given location is within the mileage radius of marker B */
+	  	function nearB(loc) {
+	  		if ((markerB_x != MARKER_START_X) && dist(projection(loc), [markerB_x + 20, markerB_y + 40]) < sliderB_val) {
+	  			return true;
+	  		}
+	  		return false;
+	  	}
+
+	  	/* Filters through data, re-renders restaurants based on filter */
+	  	function filter_restaurants() {
+	  		// Remove previous label
+	  		d3.selectAll("#pointLabel").remove();
+	  		d3.selectAll("#popupX").remove();
+	  		d3.selectAll("#popupXRect").remove();
+	  		d3.selectAll("#dataPoint").remove();
+
+	  		data.forEach (function(d) {
+	  			// Filter out restaurants that are under the minimum inspection score
+	  			if (d.score >= sliderC_val) {
+	  				var loc = projection([d.long, d.lat]);
+	  				var point_data = [ {name: d.name, address: d.address, zip: d.zip, x: loc[0], y: loc[1]} ];
+
+	  				if ((!markerAPlaced && !markerBPlaced) ||					// Markers haven't been moved yet, just filter based on inspection score
+						(nearA([d.long, d.lat]) && nearB([d.long, d.lat])) ||	// Filter for intersection (both A and B are on map)
+						(nearA([d.long, d.lat]) && !markerBPlaced) ||			// Only A is on map
+						(nearB([d.long, d.lat]) && !markerAPlaced)) {			// Only B is on map
+						plotPoint(point_data, loc[0], loc[1]);
+					}
+	  			}
+	  		});
+	  	}
+
+
+
+	  	/* ******************** */
+	 	/* MOUSE EVENT HANDLERS */
+	 	/* ******************** */
+	 	/* onDrag handler for sliders */
+	  	function on_slider_drag(d) {
+	  		// Only allow sliders to move, not other rectangles
+	  		if (d.slider) {
+	  			var newX = d3.event.x;
+	  			var width = SLIDER_WIDTH - 10;
+	  			if (newX < d.min) {
+	  				newX = d.min;
+	  			} 
+	  			if (newX > d.min + width) {
+	  				newX = d.min + width;
+	  			}
+
+	  			if (d.label == "Distance to A: ") {
+	  				sliderA_val = slider_transform(d.x, width, d.maxValue);
+	  			} else if (d.label == "Distance to B: ") {
+	  				sliderB_val = slider_transform(d.x, width, d.maxValue);
+	  			} else if (d.label == "Min Inspection Score: ") {
+					sliderC_val = slider_transform(d.x, width, d.maxValue);
+	  			}
+
+	  			d3.select(this)
+	  			  .attr("x", d.x = newX)
+	  			d3.selectAll("#sliderText")
+	  			  .text( function (d) { if (d.slider) { return d.label + slider_transform(d.x, width, d.maxValue) + " miles"; } 
+	  			  						else return d.label})
+	  			d3.selectAll("#scoreText")
+	  			  .text( function (d) { if (d.slider) { return d.label + slider_transform(d.x, width, d.maxValue); } 
+	  			  						else return d.label})
+	  		}
+
+	  		// Filter through restaurants and re-render 
+	  		if ((markerAPlaced) || (markerBPlaced) || (d.label == "Min Inspection Score: ") ) {
+	  			renderAandBCircles(markerA_x, markerA_y, markerB_x, markerB_y);
+	  			filter_restaurants();
+
+	  			// Re-render markers on top of restaurants
+		  		d3.selectAll("#A").remove();
+		  		d3.selectAll("#B").remove();
+		  		renderAandB(markerA_x, markerA_y, markerB_x, markerB_y);
+		  		if (markerA_x != MARKER_START_X) d3.selectAll("#ADescript").remove();
+		  		if (markerB_x != MARKER_START_X) d3.selectAll("#BDescript").remove();
+	  		}
+	  	}
+
+	  	/* onDrag handler for markers */
+	  	function on_marker_drag(d) {
+	  		var newX = d3.event.x;
+	  		var newY = d3.event.y;
+	  		const xMin = 5;
+	  		const yMin = 50;
+	  		const xMax = MAP_WIDTH - 30;
+	  		const yMax = MAP_HEIGHT + MAP_YSHIFT - 45;
+
+	  		// Define boundaries of map placement
+	  		if (newX < xMin) {
+	  			newX = xMin;
+	  		}
+	  		if (newX > xMax) {
+	  			newX = xMax;
+	  		} 
+	  		if (newY < yMin) {
+	  			newY = yMin;
+	  		}
+	  		if (newY > yMax) {
+	  			newY = yMax;
+	  		}
+
+	  		if (d.label == "A") {
+	  			if (!markerAPlaced) markerAPlaced = true;
+	  			markerA_x = newX;
+	  			markerA_y = newY;
+	  		} else if (d.label == "B") {
+	  			if (!markerBPlaced) markerBPlaced = true;
+	  			markerB_x = newX;
+	  			markerB_y = newY;
+	  		}
+
+	  		// Re-render markers on top of restaurants
+	  		d3.selectAll("#A").remove();
+	  		d3.selectAll("#B").remove();
+
+	  		// Render circles under everything
+	  		renderAandBCircles(markerA_x, markerA_y, markerB_x, markerB_y);
+
+	  		// Filter through restaurants and re-render under markers
+	  		filter_restaurants();
+
+	  		if (d.label == "A") {
+	  			renderAandB(newX, newY, markerB_x, markerB_y);
+	  			if (markerBPlaced) d3.selectAll("#BDescript").remove();
+	  		} else if (d.label == "B") {
+	  			renderAandB(markerA_x, markerA_y, newX, newY);
+	  			if (markerAPlaced) d3.selectAll("#ADescript").remove();
+	  		}
+	  		d3.selectAll("#" + d.label + "Descript").remove();
+	  	}
+
+	  	/* Get rid of selection when map background is clicked */
+	  	function on_click_map(d) {
+	  		// Point selected, make it go back to normal
+	  		if (prevSelection != null) {
+	  			d3.select(prevSelection).transition()
+	  									.attr("fill", "black").attr("r", 3);
+	  			prevSelection = null;
+	  		}
+	  		// Animate popup removal
+	  		d3.selectAll("#pointLabel").transition()
+	  			.attr("width", 0)
+	  			.attr("height", 0)
+	  			.style("opacity", 0)
+	  			.attr("font-size", "0px")
+	  			.remove()
+	  		d3.selectAll("#popupX").remove();
+	  		d3.selectAll("#popupXRect").remove();
+	  	}
+
+	  	/* Get rid of selection */
+	  	function on_click_x(d) {
+	  		if (prevSelection != null) {
+	  			d3.select(prevSelection).attr("fill", "black").attr("r", 3);
+	  			prevSelection = null;
+	  		}
+	  		// Animate popup removal
+	  		d3.selectAll("#pointLabel").transition()
+	  			.attr("width", 0)
+	  			.attr("height", 0)
+	  			.style("opacity", 0)
+	  			.attr("font-size", "0px")
+	  			.remove()
+	  		d3.selectAll("#popupX").remove();
+	  		d3.selectAll("#popupXRect").remove();
+	  	}
+
+	  	/* Change opacity of point on mouseover */
+	  	function on_mouseover_point() {
+	  		d3.select(this).transition().attr("r", 5);
+	  	}
+
+	  	/* Rever back to normal opacity on mouseout */
+	  	function on_mouseout_point() {
+	  		if (this != prevSelection) {
+	  			d3.select(this).transition().attr("r", 3);	
+	  		}
+	  	}
+
+	  	/* Display point's name, address, etc in a pop-up window */
+	  	function on_click_point(d) {
+	  		const h_spacing = 10;
+	  		const v_spacing = 20;
+	  		const h = 70;
+	  		var x = d.x;
+
+	  		// Remove previous label
+	  		d3.selectAll("#pointLabel").remove();
+	  		d3.selectAll("#popupX").remove();
+	  		d3.selectAll("#popupXRect").remove();
+	  		if (prevSelection != null) d3.select(prevSelection).transition()
+	  														   .attr("fill", "black").attr("r", 3);
+	  		d3.select(this).transition()
+	  					   .attr("fill", "red").attr("r", 5);
+	  		prevSelection = this;
+
+	    	// Restaurant name
+	  		var name = mapBackground.append("text")
+				  					.attr("id", "pointLabel")
+								    .attr("x", d.x + h_spacing)
+								    .attr("y", d.y + v_spacing)
+								    .text(d.name)
+								    .attr("font-family", "sans-serif")
+								    .attr("font-size", "15px")
+								    .attr("fill", POPUP_TEXT_COLOR)
+			// Address
+			var address = mapBackground.append("text")
+				  					   .attr("id", "pointLabel")
+								       .attr("x", d.x + h_spacing)
+								       .attr("y", d.y + (2 * v_spacing))
+								       .text(d.address)
+								       .attr("font-family", "sans-serif")
+								       .attr("font-size", "15px")
+								       .attr("fill", POPUP_TEXT_COLOR)
+			// SF, zipcode
+			var zipcode = mapBackground.append("text")
+				  					   .attr("id", "pointLabel")
+								       .attr("x", d.x + h_spacing)
+								       .attr("y", d.y + (3 * v_spacing))
+								       .text("San Francisco, CA " + d.zip)
+								       .attr("font-family", "sans-serif")
+								       .attr("font-size", "15px")
+								       .attr("fill", POPUP_TEXT_COLOR)
+
+		 	// Calculate width of bounding rectangle
+			var rect_width = name.node().getComputedTextLength();
+			if (address.node().getComputedTextLength() > rect_width) rect_width = address.node().getComputedTextLength();
+			if (zipcode.node().getComputedTextLength() > rect_width) rect_width = zipcode.node().getComputedTextLength();
+			rect_width += (5 * h_spacing);
+			x = (d.x + rect_width >= MAP_WIDTH) ? MAP_WIDTH - rect_width : x;		// Shift popup left if it's going to be cut off
+
+			d3.selectAll("#pointLabel").remove();
+			d3.selectAll("#popupX").remove();
+			d3.selectAll("#popupXRect").remove();
+			
+			// Bounding rectangle, animated
+	  		var rect = mapBackground.append("rect")
+									.attr('id', 'pointLabel')
+								 	.attr('x', x)
+									.attr('y', d.y)
+									.attr('rx', 10)
+									.attr('ry', 10)
+									.attr('width', 0)
+									.attr('height', 0)
+									.attr('fill', 'red')
+									.style("opacity", .8)
+			rect.transition()
+				.attr('width', rect_width)
+				.attr('height', h)
+
+			// Re-add labels on top of bounding rectangle
+			// Name
+			var name = mapBackground.append("text")
+				  					.attr("id", "pointLabel")
+								    .attr("x", x)
+								    .attr("y", d.y)
+								    .text(d.name)
+								    .attr("font-family", "sans-serif")
+								    .attr("font-size", "0px")
+								    .attr("fill", POPUP_TEXT_COLOR)
+								    .style('opacity', 0)
+			name.transition()
+				.attr('x', x + h_spacing)
+				.attr("y", d.y + v_spacing)
+				.attr("font-size", "15px")
+				.style('opacity', 1)
+
+			// Address
+			var address = mapBackground.append("text")
+				  					   .attr("id", "pointLabel")
+								       .attr("x", x)
+								       .attr("y", d.y)
+								       .text(d.address)
+								       .attr("font-family", "sans-serif")
+								       .attr("font-size", "0px")
+								       .attr("fill", POPUP_TEXT_COLOR)
+				         			   .style("opacity", 0)
+			address.transition()
+				.attr('x', x + h_spacing)
+				.attr("y", d.y + (2 * v_spacing))
+				.attr("font-size", "15px")
+				.style("opacity", 1)
+			// SF, zipcode
+			var zip = mapBackground.append("text")
+			  					   .attr("id", "pointLabel")
+							       .attr("x", x)
+							       .attr("y", d.y)
+							       .text("San Francisco, CA " + d.zip)
+							       .attr("font-family", "sans-serif")
+							       .attr("font-size", "0px")
+							       .attr("fill", POPUP_TEXT_COLOR)
+							       .style("opacity", 0)
+			zip.transition()
+				.attr('x', x + h_spacing)
+				.attr("y", d.y + (3 * v_spacing))
+				.attr("font-size", "15px")
+				.style("opacity", 1)
+
+			// X in top right corner for removing the popup
+			var X = mapBackground.append("text")
+		  					     .attr("id", "popupX")
+						         .attr("x", x)
+						         .attr("y", d.y)
+						         .text("X")
+						         .attr("font-family", "sans-serif")
+						         .attr("font-size", "0px")
+						         .attr("fill", POPUP_TEXT_COLOR)
+						         .style("opacity", 0)
+			X.transition()
+			 .attr("x", x + rect_width - 19)
+			 .attr("y", d.y + v_spacing)
+			 .attr("font-size", "18px")
+			 .style("opacity", 1)
+			// Rect to detect clicks
+			mapBackground.append("rect")
+						 .attr("id", "popupXRect")
+						 .attr("x", x + rect_width - 25)
+						 .attr("y", d.y)
+						 .attr("rx", 10)
+						 .attr("ry", 10)
+						 .attr("width", 25)
+						 .attr("height", 25)
+						 .style("opacity", 0)
+						 .on("click", on_click_x)
+						 .on("mouseover", function () { d3.selectAll("#popupX").style("opacity", .5); })
+			 	      	 .on("mouseout", function () { d3.selectAll("#popupX").style("opacity", 1); })
+	  	}
+
+	  	/* Hover over handler for sliders */
+	  	function on_mouseover(d) {
+	  		if (d.hover) {
+	  			if (this.id == "markerBackground") {
+	  				d3.selectAll("#" + d.label) 
+	  				  .style("opacity", 0.7)
+	  			} else {
+	  				d3.select(this)
+	  		  	  	  .style("opacity", 0.7)
+	  			}
+	  		}
+	  	}
+
+	  	/* Hover off handler for sliders */
+	  	function on_mouseout(d) {
+	  		if (this.id == "markerBackground") {
+  				d3.selectAll("#" + d.label) 
+  				  .style("opacity", 1.0)
+  			} else {
+  				d3.select(this)
+  		  	  	  .style("opacity", 1.0)
+  			}
+	  	}
+
+	  	/* onClick handler for buttons */
+	  	function on_reset() {
+	  		markerAPlaced = false;
+	  		markerBPlaced = false;
+  			d3.selectAll("#slider").remove();
+  			d3.selectAll("#sliderText").remove();
+  			d3.selectAll("#scoreSlider").remove();
+  			d3.selectAll("#scoreText").remove();
+  			d3.selectAll("#markerBackground").remove();
+  			d3.selectAll("#A").remove();
+  			d3.selectAll("#B").remove();
+  			d3.selectAll("#dataPoint").remove();
+  			d3.selectAll("#circleA").remove();
+  			d3.selectAll("#circleB").remove();	
+	  		d3.selectAll("#pointLabel").remove();
+	  		d3.selectAll("#popupX").remove();
+	  		d3.selectAll("#popupXRect").remove();
+  			renderSliders();
+  			renderAandB(MARKER_START_X, MARKER_A_START_Y, MARKER_START_X, MARKER_B_START_Y);
+  			data.forEach(function(d) {
+  				plotInitialData(d);
+  			});
+	  	}
+
+
+	  	/* *************** */
+	 	/* RENDERING STUFF */
+	 	/* *************** */
+	  	/* Render the title */
+	  	function renderTitle() {
+			// Render Title
+			var title_data = [
+				{label: "Dynamic RestaurantFinder"}
+			]
+			var titleText = mapBackground.selectAll("titleText")
+									     .data(title_data)
+									     .enter()
+									     .append("text")
+									     .attr("x", 250)
+									     .attr("y", 40)
+									     .text( function (d) { return d.label })
+									     .attr("font-family", "sans-serif")
+									     .attr("font-size", "40px")
+									     .attr("fill", TITLE_COLOR)
+	  	}
+
+	  	/* Render the A & B sliders and the Score slider */
+		function renderSliders() {
+			sliderA_val = MAX_RADIUS;
+			sliderB_val = MAX_RADIUS;
+			sliderC_val = 0;
+			// Slider data
+			var slider_data = [
+				// A slider bar
+				{x: SLIDER_X, y: SLIDERA_Y + 10, rx: 6, ry: 1, width: SLIDER_WIDTH, height: 10, color: SLIDER_BAR_COLOR, 
+					slider: false, hover: false},  
+				// B slider bar   
+				{x: SLIDER_X, y: SLIDERB_Y + 10, rx: 6, ry: 1, width: SLIDER_WIDTH, height: 10, color: SLIDER_BAR_COLOR, 
+					slider: false, hover: false},
+				// A slider  
+				{x: SLIDER_X + SLIDER_WIDTH - 10, y: SLIDERA_Y, rx: 6, ry: 6, min: SLIDER_X, width: 10, height: 30, color: SLIDER_COLOR, 
+					slider: true, hover: true, label: "Distance to A: ", maxValue: MAX_RADIUS},	   
+				// B slider   
+				{x: SLIDER_X + SLIDER_WIDTH - 10, y: SLIDERB_Y, rx: 6, ry: 6, min: SLIDER_X, width: 10, height: 30, color: SLIDER_COLOR, 
+					slider: true, hover: true, label: "Distance to B: ", maxValue: MAX_RADIUS},
+			];
+
+			// Score data
+			var score_data = [
+				// C slider bar   
+				{x: SLIDER_X, y: SLIDERC_Y + 10, rx: 6, ry: 1, width: SLIDER_WIDTH, height: 10, color: SLIDER_BAR_COLOR, 
+					slider: false, hover: false},
+				// C slider   
+				{x: SLIDER_X, y: SLIDERC_Y, rx: 6, ry: 6, min: 50, width: 10, height: 30, color: SLIDER_COLOR, 
+					slider: true, hover: true, label: "Min Inspection Score: ", maxValue: MAX_INSPECT_SCORE}	
+			];
+
+			// Render sliders
+			var sliders = sliderBackground.selectAll("slider")
+									      .data(slider_data)
+									   	  .enter()
+									      .append("rect")
+									      .attr("id", "slider")
+									      .attr("x", function (d) { return d.x; })
+									      .attr("y", function (d) { return d.y; })
+									      .attr("rx", function (d) { return d.rx; })
+									      .attr("ry", function (d) { return d.ry; })
+									      .attr("width", function (d) { return d.width; })
+									      .attr("height", function (d) { return d.height; })
+									      .style("fill", function (d) { return d.color; })
+									      .call(d3.drag().on("drag", on_slider_drag))
+									      .on("mouseover", on_mouseover)
+									      .on("mouseout", on_mouseout)
+
+			// Render score slider
+			var scoreSlider = sliderBackground.selectAll("scoreSlider")
+									 	      .data(score_data)
+									 	      .enter()
+									 	      .append("rect")
+									 	      .attr("id", "scoreSlider")
+									  	      .attr("x", function (d) { return d.x; })
+									 	      .attr("y", function (d) { return d.y; })
+									 	      .attr("rx", function (d) { return d.rx; })
+									 	      .attr("ry", function (d) { return d.ry; })
+									 	      .attr("width", function (d) { return d.width; })
+									 	      .attr("height", function (d) { return d.height; })
+									 	      .style("fill", function (d) { return d.color; })
+									 	      .call(d3.drag().on("drag", on_slider_drag))
+									 	      .on("mouseover", on_mouseover)
+									 	      .on("mouseout", on_mouseout)
+
+			// Render text
+			var sliderText = sliderBackground.selectAll("sliderText")
+								  		     .data(slider_data)
+								  		     .enter()
+								  		     .append("text");
+			var sliderTextLabels = sliderText
+							 .attr("id", "sliderText")
+							 .attr("x", function (d) { return d.x - SLIDER_WIDTH + 10; })
+							 .attr("y", function (d) { return d.y - 20; })
+							 .text( function (d) { if (d.slider) { return d.label + " " + slider_transform(d.x, SLIDER_WIDTH - 10, d.maxValue) + " miles"; }})
+							 .attr("font-family", "sans-serif")
+							 .attr("font-size", "20px")
+							 .attr("fill", TEXT_COLOR);
+
+			// Render score text
+			var scoreText = sliderBackground.selectAll("scoreText")
+						  				    .data(score_data)
+						  				    .enter()
+						  				    .append("text");
+			var scoreTextLabels = scoreText
+							 .attr("id", "scoreText")
+							 .attr("x", function (d) { return d.x; })
+							 .attr("y", function (d) { return d.y - 20; })
+							 .text( function (d) { if (d.slider) { return d.label + " " + slider_transform(d.x, SLIDER_WIDTH - 10, d.maxValue); }})
+							 .attr("font-family", "sans-serif")
+							 .attr("font-size", "20px")
+							 .attr("fill", TEXT_COLOR);
+		}
+
+		/* Render the Reset buttons */
+		function renderButtons() {
+			// Reset button data
+			var button_data = [
+				{x: BUTTON_X, y: BUTTON_Y, width: BUTTON_WIDTH, height: BUTTON_HEIGHT, rx: 6, ry: 6, xShift: 22,
+				 color: SLIDER_BAR_COLOR, hover: true, label: "Reset"}
+			];
+
+			// Render buttons
+			var buttons = sliderBackground.selectAll("button")
+									      .data(button_data)
+								          .enter()
+								          .append("rect")
+								          .attr("x", function (d) { return d.x; })
+								          .attr("y", function (d) { return d.y; })
+								          .attr("width", function (d) { return d.width; })
+								          .attr("height", function (d) { return d.height; })
+								          .attr("rx", function (d) { return d.rx; })
+								          .attr("ry", function (d) { return d.ry; })
+								          .attr("fill", function (d) { return d.color; })
+								          .on("mouseover", on_mouseover)
+								          .on("mouseout", on_mouseout)
+								          .on("click", on_reset);
+
+			// Render button text
+			var buttonText = sliderBackground.selectAll("buttonText")
+								  	         .data(button_data)
+								             .enter()
+								             .append("text");
+			var buttonTextLabels = buttonText
+							 .attr("x", function (d) { return d.x + d.xShift; })
+							 .attr("y", function (d) { return d.y + 31; })
+							 .text( function (d) { return d.label })
+							 .attr("font-family", "sans-serif")
+							 .attr("font-size", "20px")
+							 .attr("fill", "black")
+							 .on("mouseover", on_mouseover)
+						     .on("mouseout", on_mouseout)
+							 .on("click", on_reset);
+		}
+
+		function renderAandBCircles(Ax, Ay, Bx, By) {
+			markerA_x = Ax;
+			markerA_y = Ay;
+			markerB_x = Bx;
+			markerB_y = By;
+
+			// Render circles around A and B
+			d3.selectAll("#circleA").remove();
+			d3.selectAll("#circleB").remove();
+
+			if (markerAPlaced) {
+				// Calculate radius of marker A circle (convert miles --> pixels)
+				mapBackground.append('circle')
+						     .attr('id', "circleA")
+						     .attr("cx", markerA_x + 20)
+					   	     .attr("cy", markerA_y + 40)
+			     	   	     .attr('r', pixelsPerMile * sliderA_val)
+				  	         .attr('fill', 'blue')
+				  	         .attr("opacity", 0.2)
+			}
+
+			if (markerBPlaced) {
+				// Calculate radius of marker B circle (convert miles --> pixels)
+		  	    mapBackground.append('circle')
+							 .attr('id', "circleB")
+							 .attr("cx", markerB_x + 20)
+						   	 .attr("cy", markerB_y + 40)
+				     	   	 .attr('r', pixelsPerMile * sliderB_val)
+					  	     .attr('fill', 'green')
+					  	     .attr("opacity", 0.2)
+			}
+		}
+
+		/* Render A and B markers */
+		function renderAandB(Ax, Ay, Bx, By) {
+			markerA_x = Ax;
+			markerA_y = Ay;
+			markerB_x = Bx;
+			markerB_y = By;
+
+			// Marker data
+			var marker_data = [
+				{x: markerA_x, y: markerA_y + 15, width: 40, height: 40, label: "A", hover: true},
+				{x: markerB_x, y: markerB_y + 15, width: 40, height: 40, label: "B", hover: true}
+			]
+			// Render markers
+			var markerText = mapBackground.selectAll("marker")
+								  	      .data(marker_data)
+								          .enter()
+								          .append("text")
+								          .attr("id", function (d) { return d.label })
+									 	  .attr("x", function (d) { return d.x + 10})
+									 	  .attr("y", function (d) { return d.y + 30})
+									 	  .text( function (d) { return d.label })
+									 	  .attr("font-family", "sans-serif")
+									 	  .attr("font-size", "30px")
+									 	  .attr("font-weight", "bold")
+									 	  .attr("fill", "red")
+
+			// Render invisible marker background
+			var markerBackground = mapBackground.selectAll("markerBackground")
+											    .data(marker_data)
+											    .enter()
+											    .append("rect")
+											    .attr("id", "markerBackground")
+				   						 	    .attr("x", function (d) { return d.x })
+									 		    .attr("y", function (d) { return d.y })
+									 		    .attr("width", function (d) { return d.width })
+									 		    .attr("height", function (d) { return d.height })
+									 		    .attr("fill", d3.rgb(255, 255, 255))
+									 		    .attr("opacity", 0)
+									 		    .call(d3.drag().on("drag", on_marker_drag))
+									 		    .on("mouseover", on_mouseover)
+								     		    .on("mouseout", on_mouseout);
+
+
+			var descript_data = [
+				{x: MARKER_START_X + 45, y: MARKER_A_START_Y + 39, label: "Drag and drop the 'A' marker to a location", id: "ADescript"},
+				{x: MARKER_START_X + 45, y: MARKER_B_START_Y + 39, label: "Drag and drop the 'B' marker to a location", id: "BDescript"}
+			]
+
+			// Render text next to A and B markers
+			var markerDescription = mapBackground.selectAll("markerDescription")
+										  	     .data(descript_data)
+										         .enter()
+										         .append("text")
+										         .attr("id", function (d) { return d.id })
+											 	 .attr("x", function (d) { return d.x })
+											 	 .attr("y", function (d) { return d.y })
+											 	 .text( function (d) { return d.label })
+											 	 .attr("font-family", "sans-serif")
+											 	 .attr("font-size", "15px")
+											 	 .attr("font-weight", "bold")
+											 	 .attr("fill", TEXT_COLOR);
+		}
+
+		/* Render directions text on the bottom of the page */
+		function renderDirections() {
+			// Directions data
+			directions_data = [
+				{x: 17, y: MAP_HEIGHT, label: "The black dots are restaurants in San Francisco."},
+				{x: 17, y: MAP_HEIGHT + 20, label: "You may drag the 'A' and 'B' markers to any location on the map."},
+				{x: 17, y: MAP_HEIGHT + 40, label: "Moving the sliders corresponding to each marker will filter out"},
+				{x: 17, y: MAP_HEIGHT + 60, label: "restaurants according to their distance from the respective marker."},
+				{x: 17, y: MAP_HEIGHT + 80, label: "Only the intersection of A and B's distance circles is shown."},
+				{x: 17, y: MAP_HEIGHT + 100, label: "Moving the 'Inspection Score' slider will filter out restaurants"},
+				{x: 17, y: MAP_HEIGHT + 120, label: "so that only restaurants with at least the given score will be visible."}
+			]
+
+			// Render directions text
+			var markerText = sliderBackground.selectAll("directions")
+								  	      	 .data(directions_data)
+								          	 .enter()
+								           	 .append("text")
+									 	  	 .attr("x", function (d) { return d.x})
+									 	  	 .attr("y", function (d) { return d.y})
+									 	  	 .text( function (d) { return d.label })
+									 	  	 .attr("font-family", "sans-serif")
+									 	  	 .attr("font-size", "20px")
+									 	  	 .attr("fill", TEXT_COLOR);
+		}
+
+
+
+		/* *********************** */
+	 	/* ******** STUFF ******** */
+	 	/* *********************** */
+	 	var data = [];		// To store map data array of {lat, long, score}
+
+		// Set up projection that the map is using 
+		// This is the mapping between <longitude, latitude> position to <x, y> pixel position on the map
+		// projection is a function and it has an inverse:
+		// projection([lon, lat]) returns [x, y]
+		// projection.invert([x, y]) returns [lon, lat]
+		var projection = d3.geoMercator()
+		  				   .center([-122.433701, 37.767683]) // San Francisco, roughly
+		  				   .scale(225000)
+		  				   .translate([MAP_WIDTH / 2, MAP_HEIGHT / 2 + MAP_YSHIFT]);
+
+		// Calculate pixels per mile
+		var pixelsPerMile = calculatePixelsPerMile();
+
+		// Add an SVG element for map area
+		var mapBackground = d3.select('body')
+							  .append('svg')
+				  			  .attr('width', MAP_WIDTH)
+				  			  .attr('height', MAP_HEIGHT + MARGIN_Y)
+	    // Add an SVG element for slider area
+		var sliderBackground = d3.select('body')
+								 .append('svg')
+								 .attr('width', MARGIN_X)
+								 .attr('height', MAP_HEIGHT + MARGIN_Y)
+
+		// Load in csv data
+		var index = 0;
+		d3.csv("/data/restaurant_scores.csv", function(d) {
+			data.push({lat: +d.business_latitude, long: +d.business_longitude, score: +d.inspection_score, 
+					   name: d.business_name, address: d.business_address, phone: d.business_phone_number, zip: d.business_postal_code});
+			plotInitialData(data[index]);
+			index ++;
+		});
+
+	  	// Render map image
+	  	mapBackground.append('image')
+				     .attr("y", MAP_YSHIFT)
+		     	     .attr('width', MAP_WIDTH)
+			  	     .attr('height', MAP_HEIGHT)
+			  	     .attr('xlink:href', 'data/sf-map.svg')
+			  	     .on("click", on_click_map);
+
+	  	// Render everything else
+		renderTitle();
+		renderSliders();
+		renderButtons();
+		renderAandB(MARKER_START_X, MARKER_A_START_Y, MARKER_START_X, MARKER_B_START_Y);
+		renderDirections();
+	</script>
+
+</body>
+</html>
+
+
+
+
