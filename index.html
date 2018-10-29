@@ -13,7 +13,7 @@
 
 <html>
     <head>
-    	<script src="http://d3js.org/d3.v5.min.js"></script>
+    	<script src="https://d3js.org/d3.v5.min.js"></script>
     </head>
 <body>
 	<div id="visualization_area"></div>
@@ -135,7 +135,7 @@
 	  		return (R * c);
 	  	}
 
-	  	/* Calculates the distance in miles between two gps coordinates, converting to pixels then to miles */
+	  	/* Calculates the distance in miles between two coordinates, converting to pixels then to miles */
 	  	function dist(loc1, loc2) {
 	  		var numPixels = Math.sqrt(Math.pow(loc2[0] - loc1[0], 2) + Math.pow((loc2[1] - loc1[1]), 2));
 	  		return numPixels / pixelsPerMile;
@@ -336,8 +336,8 @@
 	  	function on_click_point(d) {
 	  		const h_spacing = 10;
 	  		const v_spacing = 20;
-	  		const h = 70;
-	  		var x = d.x;
+	  		var h 			= 70;
+	  		var x 			= d.x;
 
 	  		// Remove previous label
 	  		d3.selectAll("#pointLabel").remove();
@@ -387,6 +387,11 @@
 			d3.selectAll("#pointLabel").remove();
 			d3.selectAll("#popupX").remove();
 			d3.selectAll("#popupXRect").remove();
+
+			var dist_a = markerAPlaced ? dist([markerA_x + 20, markerA_y + 40], [d.x, d.y]) : -1;		// calculate distance to A
+			var dist_b = markerBPlaced ? dist([markerB_x + 20, markerB_y + 40], [d.x, d.y]) : -1;		// calculate distance to B
+			h += markerAPlaced ? 20 : 0;		// Accommodate A info in popup
+			h += markerBPlaced ? 20 : 0;		// Accommodate B info in popup
 			
 			// Bounding rectangle, animated
 	  		var rect = mapBackground.append("rect")
@@ -450,6 +455,45 @@
 				.attr("y", d.y + (3 * v_spacing))
 				.attr("font-size", "15px")
 				.style("opacity", 1)
+
+			var extra_spacing = 0;
+			if (markerAPlaced) {
+				extra_spacing += 1;
+				// Miles from marker A
+				var aInfo = mapBackground.append("text")
+				  					     .attr("id", "pointLabel")
+								         .attr("x", x)
+								         .attr("y", d.y)
+								         .text("[" + (Math.round(dist_a * 10) / 10) + " miles from A]")
+								         .attr("font-family", "sans-serif")
+								         .attr("font-size", "0px")
+								         .attr("fill", POPUP_TEXT_COLOR)
+				         			     .style("opacity", 0)
+				aInfo.transition()
+					 .attr('x', x + h_spacing)
+					 .attr("y", d.y + (4 * v_spacing))
+					 .attr("font-size", "15px")
+					 .style("opacity", 1)
+			}
+
+			if (markerBPlaced) {
+				var currY = d.y + (v_spacing * (4 + extra_spacing));
+				// miles from marker B
+				var bInfo = mapBackground.append("text")
+				  					     .attr("id", "pointLabel")
+								         .attr("x", x)
+								         .attr("y", d.y)
+								         .text("[" + (Math.round(dist_b * 10) / 10) + " miles from B]")
+								         .attr("font-family", "sans-serif")
+								         .attr("font-size", "0px")
+								         .attr("fill", POPUP_TEXT_COLOR)
+				         			     .style("opacity", 0)
+				bInfo.transition()
+					 .attr('x', x + h_spacing)
+					 .attr("y", currY)
+					 .attr("font-size", "15px")
+					 .style("opacity", 1)
+			}
 
 			// X in top right corner for removing the popup
 			var X = mapBackground.append("text")
@@ -792,7 +836,8 @@
 				{x: 17, y: MAP_HEIGHT + 60, label: "restaurants according to their distance from the respective marker."},
 				{x: 17, y: MAP_HEIGHT + 80, label: "Only the intersection of A and B's distance circles is shown."},
 				{x: 17, y: MAP_HEIGHT + 100, label: "Moving the 'Inspection Score' slider will filter out restaurants"},
-				{x: 17, y: MAP_HEIGHT + 120, label: "so that only restaurants with at least the given score will be visible."}
+				{x: 17, y: MAP_HEIGHT + 120, label: "so that only restaurants with at least the given score will be visible."},
+				{x: 17, y: MAP_HEIGHT + 140, label: "Click on points to get more info about the restaurant."}
 			]
 
 			// Render directions text
