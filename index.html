@@ -886,7 +886,6 @@
 
 		// Load in csv data
 		var index = 0;
-		console.log("here");
 		d3.csv("data/restaurant_scores.csv", function(d) {
 			data.push({lat: +d.business_latitude, long: +d.business_longitude, score: +d.inspection_score, 
 					   name: d.business_name, address: d.business_address, phone: d.business_phone_number, zip: d.business_postal_code});
